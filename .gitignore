@@ -1,6 +1,3 @@
-# dependencies
-/node_modules
-
 # OS
 .DS_Store
 
@@ -16,8 +13,12 @@
 /.claude/state/
 /.claude/cache/
 
-# typescript
-*.tsbuildinfo
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
 
 # screenshot originals (only the cropped versions are committed)
 /docs/screenshots/originals/

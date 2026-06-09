@@ -181,14 +181,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          node-version: '20'
-          cache: 'npm'
+          python-version: '3.11'
+          cache: 'pip'
 
       - name: Install dependencies
-        run: npm ci
+        run: pip install -e ".[test]"
 
       # Bring previous reports into the workspace so they survive each run
       # and so build-site can list them all in the archive.
@@ -231,10 +231,10 @@ jobs:
           REPORT_LOCALE: ${{ vars.REPORT_LOCALE || 'zh' }}
           REPORT_TZ: ${{ vars.REPORT_TZ }}
           WEB_MODE: 'true'
-        run: npm run daily
+        run: python -m dailybrief daily
 
       - name: Build static site (index + archive)
-        run: npm run build-site
+        run: python -m dailybrief build-site
 
       - name: Publish to gh-pages
         uses: peaceiris/actions-gh-pages@v4
