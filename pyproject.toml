@@ -1,6 +1,6 @@
 [project]
 name = "dailybrief"
-version = "0.1.0"
+version = "0.1.1"
 description = "Daily Brief: local-first Python AI news and markets digest generator."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -12,6 +12,7 @@ dependencies = [
   "json-repair>=0.30.0",
   "openai>=1.55.0",
   "python-dotenv>=1.0.1",
+  "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]

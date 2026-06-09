@@ -15,6 +15,12 @@ except Exception:  # pragma: no cover - dependency is declared, fallback is defe
 
 
 CONFIG_FILE = ".daily-brief-config"
+TZ_ALIASES = {
+    "China/Shanghai": "Asia/Shanghai",
+    "China/Beijing": "Asia/Shanghai",
+    "Asia/Beijing": "Asia/Shanghai",
+    "PRC": "Asia/Shanghai",
+}
 
 
 def _is_repo_root(path: Path) -> bool:
@@ -78,7 +84,10 @@ def report_locale() -> str:
 
 
 def get_report_tz() -> str | None:
-    return os.environ.get("REPORT_TZ", "").strip() or None
+    tz_name = os.environ.get("REPORT_TZ", "").strip()
+    if not tz_name:
+        return None
+    return TZ_ALIASES.get(tz_name, tz_name)
 
 
 def today_key(d: datetime | None = None) -> str:

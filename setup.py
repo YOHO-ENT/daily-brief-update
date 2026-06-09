@@ -3,7 +3,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="dailybrief",
-    version="0.1.0",
+    version="0.1.1",
     description="Daily Brief: local-first Python AI news and markets digest generator.",
     packages=find_packages(include=["dailybrief", "dailybrief.*"]),
     python_requires=">=3.9",
@@ -15,6 +15,7 @@ setup(
         "json-repair>=0.30.0",
         "openai>=1.55.0",
         "python-dotenv>=1.0.1",
+        "tzdata>=2024.1",
     ],
     extras_require={"test": ["pytest>=8.0.0"]},
     entry_points={"console_scripts": ["dailybrief=dailybrief.cli:main"]},
