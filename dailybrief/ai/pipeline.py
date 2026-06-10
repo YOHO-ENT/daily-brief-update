@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from dailybrief.models import ArticleInput, Category
+from dailybrief.runtime.safety import safe_error
 from dailybrief.utils import LOG_DIR, json_default, report_locale
 
 from .json_util import extract_json, repair_json_text
@@ -118,5 +119,5 @@ def generate_daily_report(articles: list[ArticleInput]) -> dict[str, Any]:
     try:
         return _call_once(payload_json)
     except Exception as exc:
-        print(f"[pipeline] first LLM call failed, retrying: {exc}")
+        print(f"[pipeline] first LLM call failed, retrying: {safe_error(exc)}")
         return _call_once(payload_json)

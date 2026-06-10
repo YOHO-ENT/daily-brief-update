@@ -6,6 +6,8 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from dailybrief.runtime.safety import redact
+
 from .log import LlmCallRecord, classify_error, log_llm_call
 
 
@@ -132,7 +134,7 @@ def _log(
             inputChars=len(system_prompt) + len(user_prompt),
             outputChars=len(text),
             errorCategory=None if success else classify_error(error),
-            errorSnippet=None if success else error[:200],
+            errorSnippet=None if success else redact(error)[:200],
         )
     )
 
@@ -163,7 +165,7 @@ def _run_claude_cli(system_prompt: str, user_prompt: str, timeout_ms: int) -> Ll
         stdout = proc.stdout.strip()
         stderr = proc.stderr.strip()
         if stderr:
-            print(f"[claude-cli] stderr (non-fatal): {stderr}")
+            print(f"[claude-cli] stderr (non-fatal): {redact(stderr)}")
         if proc.returncode != 0 and not stdout:
             raise RuntimeError(f"claude CLI exited {proc.returncode} with empty stdout\n{stderr}")
         _log(started=started, ts=ts, backend=backend, model=model, success=True, system_prompt=system_prompt, user_prompt=user_prompt, text=stdout)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from dailybrief.runtime.safety import safe_error
 from dailybrief.utils import report_locale
 
 from .json_util import extract_json, repair_json_text
@@ -104,5 +105,5 @@ def generate_trading_commentary(input_data: dict) -> dict:
                 "risk_caveat": parsed.get("risk_caveat") or fallback["risk_caveat"],
             }
         except Exception as exc:
-            print(f"[trading-commentary] attempt {attempt + 1}/3 failed: {exc}")
+            print(f"[trading-commentary] attempt {attempt + 1}/3 failed: {safe_error(exc)}")
     return fallback

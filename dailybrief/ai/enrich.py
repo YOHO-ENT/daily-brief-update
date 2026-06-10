@@ -5,6 +5,7 @@ from dataclasses import asdict
 from datetime import datetime
 
 from dailybrief.models import ArticleInput
+from dailybrief.runtime.safety import safe_error
 from dailybrief.utils import LOG_DIR, report_locale
 
 from .json_util import extract_json, repair_json_text
@@ -84,7 +85,7 @@ def run_enrichment(payload: list[dict], system_prompt: str, scope: str) -> dict[
             _dump_under_count(scope, len(payload), len(out), result.text)
         return out
     except Exception as exc:
-        print(f"[enrich] {scope} failed: {exc}")
+        print(f"[enrich] {scope} failed: {safe_error(exc)}")
         return {}
 
 

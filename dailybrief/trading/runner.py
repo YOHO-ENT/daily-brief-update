@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 
+from dailybrief.runtime.safety import safe_error
+
 from .signals import analyze_ticker
 from .watchlist import WATCHLIST, TickerDef
 from .yahoo import fetch_ticker_data
@@ -15,7 +17,7 @@ def _analyze(defn: TickerDef) -> dict | None:
             return None
         return analyze_ticker(defn, raw)
     except Exception as exc:
-        print(f"[trading] {defn.symbol} failed: {exc}")
+        print(f"[trading] {defn.symbol} failed: {safe_error(exc)}")
         return None
 
 

@@ -230,11 +230,9 @@ jobs:
           LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
           REPORT_LOCALE: ${{ vars.REPORT_LOCALE || 'zh' }}
           REPORT_TZ: ${{ vars.REPORT_TZ }}
+          DAILYBRIEF_LIVE_ALLOWED: 'true'
           WEB_MODE: 'true'
-        run: python -m dailybrief daily
-
-      - name: Build static site (index + archive)
-        run: python -m dailybrief build-site
+        run: python -m dailybrief run --live --confirm-live --build-site --output-json
 
       - name: Publish to gh-pages
         uses: peaceiris/actions-gh-pages@v4

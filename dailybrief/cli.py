@@ -8,73 +8,43 @@ import subprocess
 import sys
 import tempfile
 import webbrowser
-from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from dailybrief.models import ArticleInput, RawArticle
-from dailybrief.utils import CONFIG_FILE, LOG_DIR, OUTPUT_DIR, REPO_ROOT, ensure_dirs, json_default, load_env, parse_dt, read_json, today_key, write_json
+from dailybrief.runtime.safety import env_bool, redact, safe_error
+from dailybrief.storage.artifacts import (
+    article_from_json,
+    article_to_input,
+    load_articles,
+    load_report,
+    paths_for_date,
+    write_report_outputs,
+)
+from dailybrief.utils import CONFIG_FILE, LOG_DIR, OUTPUT_DIR, REPO_ROOT, ensure_dirs, json_default, load_env, read_json, today_key, write_json
 
 load_env()
 
 
 def _article_to_input(raw: RawArticle, source_name: str) -> ArticleInput:
-    return ArticleInput(
-        sourceId=raw.sourceId,
-        title=raw.title,
-        url=raw.url,
-        excerpt=raw.excerpt,
-        publishedAt=raw.publishedAt,
-        category=raw.category,
-        summary=raw.summary,
-        meta=raw.meta,
-        source=source_name,
-    )
+    return article_to_input(raw, source_name)
 
 
 def _article_from_json(data: dict) -> ArticleInput:
-    return ArticleInput(
-        sourceId=data["sourceId"],
-        title=data["title"],
-        url=data["url"],
-        excerpt=data.get("excerpt"),
-        publishedAt=parse_dt(data.get("publishedAt")),
-        category=data["category"],
-        summary=data.get("summary") or data.get("cnSummary"),
-        meta=data.get("meta"),
-        source=data.get("source", ""),
-    )
+    return article_from_json(data)
 
 
 def _load_articles(date: str) -> list[ArticleInput]:
-    sidecar = OUTPUT_DIR / date / f"{date}-articles.json"
-    if not sidecar.exists():
-        raise FileNotFoundError(f"Articles sidecar not found: {sidecar}")
-    data = read_json(sidecar)
-    return [_article_from_json(a) for a in data.get("articles", [])]
+    return load_articles(date)
 
 
 def _load_report(date: str) -> dict:
-    path = OUTPUT_DIR / date / f"{date}.json"
-    if not path.exists():
-        raise FileNotFoundError(f"Report JSON not found: {path}")
-    return read_json(path)
+    return load_report(date)
 
 
 def _write_report_outputs(date: str, report: dict, articles: list[ArticleInput]) -> None:
-    from dailybrief.output.render import group_raw, render_html, render_markdown
-    from dailybrief.sources.registry import sources
-
-    date_dir = OUTPUT_DIR / date
-    date_dir.mkdir(parents=True, exist_ok=True)
-    base = date_dir / date
-    raw = group_raw(articles, sources)
-    write_json(base.with_suffix(".json"), report)
-    write_json(Path(f"{base}-articles.json"), {"date": date, "articles": articles})
-    base.with_suffix(".html").write_text(render_html(report, raw, date), encoding="utf-8")
-    if os.environ.get("OUTPUT_MARKDOWN") == "true":
-        base.with_suffix(".md").write_text(render_markdown(report, date), encoding="utf-8")
+    write_report_outputs(date, report, articles)
 
 
 def fetch_all() -> list[ArticleInput]:
@@ -89,7 +59,7 @@ def fetch_all() -> list[ArticleInput]:
             print(f"  {source.id.ljust(20)} {len(items)}")
             articles.extend(_article_to_input(item, source.name) for item in items)
         except Exception as exc:
-            print(f"  {source.id.ljust(20)} FAILED - {exc}", file=sys.stderr)
+            print(f"  {source.id.ljust(20)} FAILED - {safe_error(exc)}", file=sys.stderr)
     return articles
 
 
@@ -178,13 +148,13 @@ def run_trading() -> dict | None:
     }
 
 
-def cmd_daily(_args: argparse.Namespace) -> None:
+def run_daily_pipeline(date: str | None = None) -> dict[str, Any]:
     from dailybrief.ai.llm import get_model_tag, validate_backend_credentials
     from dailybrief.ai.pipeline import generate_daily_report
 
     ensure_dirs()
     validate_backend_credentials()
-    date = today_key()
+    date = date or today_key()
     print(f"[daily] {date} - fetching sources...\n")
     articles = fetch_all()
     print(f"\n[daily] total articles: {len(articles)}")
@@ -195,13 +165,18 @@ def cmd_daily(_args: argparse.Namespace) -> None:
     try:
         trading = run_trading()
     except Exception as exc:
-        print(f"[daily] trading section failed: {exc}")
+        print(f"[daily] trading section failed: {safe_error(exc)}")
     print(f"[daily] generating digest with {get_model_tag()}...")
     report = generate_daily_report(articles)
     if trading:
         report["trading"] = trading
-    _write_report_outputs(date, report, articles)
+    paths = write_report_outputs(date, report, articles)
     print(f"[daily] wrote {OUTPUT_DIR / date / date}.{{json,html,articles.json}}")
+    return {"date": date, "article_count": len(articles), "paths": paths.to_dict()}
+
+
+def cmd_daily(_args: argparse.Namespace) -> None:
+    run_daily_pipeline()
 
 
 def cmd_dry_run(_args: argparse.Namespace) -> None:
@@ -394,6 +369,143 @@ def cmd_deploy(args: argparse.Namespace) -> None:
     print(f"[deploy] OK - {date}.html deployed")
 
 
+def _split_channels(raw: str | None) -> tuple[str, ...]:
+    if not raw:
+        return ("slack", "telegram", "email")
+    return tuple(item.strip().lower() for item in raw.split(",") if item.strip())
+
+
+def _json_print(payload: dict[str, Any]) -> None:
+    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True, default=json_default))
+
+
+def _require_live_gate(confirm_live: bool) -> None:
+    if not confirm_live:
+        raise RuntimeError("Live run requires --confirm-live.")
+    if not env_bool("DAILYBRIEF_LIVE_ALLOWED", False):
+        raise RuntimeError("Live run requires DAILYBRIEF_LIVE_ALLOWED=true.")
+
+
+def _run_dry_plan(args: argparse.Namespace) -> dict[str, Any]:
+    from dailybrief.ai.llm import get_backend, get_model_tag
+    from dailybrief.sources.registry import filter_by_locale, load_all_sources, report_locale
+
+    date = args.date or today_key()
+    all_sources = load_all_sources()
+    active_sources = [s for s in filter_by_locale(all_sources) if s.enabled is not False]
+    paths = paths_for_date(date)
+    return {
+        "status": "dry_run",
+        "mode": "dry-run",
+        "date": date,
+        "repo_root": str(REPO_ROOT),
+        "output_dir": str(OUTPUT_DIR),
+        "report_locale": report_locale(),
+        "llm_backend": get_backend(),
+        "model_tag": get_model_tag(),
+        "source_count": len(all_sources),
+        "active_source_count": len(active_sources),
+        "live_gate": {
+            "confirm_live_required": True,
+            "env": "DAILYBRIEF_LIVE_ALLOWED",
+            "env_enabled": env_bool("DAILYBRIEF_LIVE_ALLOWED", False),
+        },
+        "planned_actions": {
+            "will_fetch_sources": False,
+            "will_call_llm": False,
+            "will_write_artifacts": False,
+            "will_build_site": bool(args.build_site),
+            "will_deploy": bool(args.deploy),
+            "will_send_notifications": bool(args.send),
+        },
+        "artifact_paths": paths.to_dict(),
+    }
+
+
+def _print_run_payload(payload: dict[str, Any]) -> None:
+    print(f"status={payload['status']}")
+    print(f"mode={payload['mode']}")
+    print(f"date={payload['date']}")
+    if payload.get("active_source_count") is not None:
+        print(f"active_source_count={payload['active_source_count']}")
+    paths = payload.get("artifact_paths") or payload.get("paths") or {}
+    if paths.get("html"):
+        print(f"html={paths['html']}")
+
+
+def cmd_run(args: argparse.Namespace) -> None:
+    from dailybrief.integrations.notifications.summary import notify_report
+
+    if not args.live:
+        payload = _run_dry_plan(args)
+        if args.output_json:
+            _json_print(payload)
+        else:
+            _print_run_payload(payload)
+        return
+
+    _require_live_gate(args.confirm_live)
+    date = args.date or today_key()
+    run_result = run_daily_pipeline(date)
+    if args.build_site:
+        cmd_build_site(argparse.Namespace())
+    if args.deploy:
+        cmd_deploy(argparse.Namespace(date=date))
+    deliveries = []
+    if args.send:
+        deliveries = [
+            item.to_dict()
+            for item in notify_report(
+                date,
+                channels=_split_channels(args.channels),
+                dry_run=False,
+                confirm_send=args.confirm_send,
+            )
+        ]
+    payload = {
+        "status": "success",
+        "mode": "live",
+        "date": date,
+        "paths": run_result["paths"],
+        "article_count": run_result["article_count"],
+        "build_site": bool(args.build_site),
+        "deploy": bool(args.deploy),
+        "notifications": deliveries,
+    }
+    if args.output_json:
+        _json_print(payload)
+    else:
+        _print_run_payload(payload)
+
+
+def cmd_notify(args: argparse.Namespace) -> None:
+    from dailybrief.integrations.notifications.summary import notify_report
+
+    date = args.date or today_key()
+    live = bool(args.live)
+    if live and not args.confirm_send:
+        raise RuntimeError("Live notification requires --confirm-send.")
+    deliveries = notify_report(
+        date,
+        channels=_split_channels(args.channels),
+        dry_run=not live,
+        confirm_send=args.confirm_send,
+    )
+    payload = {
+        "status": "success" if not any(item.status == "failed" for item in deliveries) else "failed",
+        "mode": "live" if live else "dry-run",
+        "date": date,
+        "notifications": [item.to_dict() for item in deliveries],
+    }
+    if args.output_json:
+        _json_print(payload)
+    else:
+        print(f"status={payload['status']}")
+        print(f"mode={payload['mode']}")
+        for item in deliveries:
+            print(f"{item.channel}={item.status}")
+
+
 def _pick_report(date: str | None) -> Path:
     if date:
         target = OUTPUT_DIR / date / f"{date}.html"
@@ -570,6 +682,7 @@ Write-Host "[OK] Task 'DailyBrief' registered"
 
 def _append_log(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    text = redact(text)
     path.write_text(path.read_text(encoding="utf-8") + text if path.exists() else text, encoding="utf-8")
 
 
@@ -593,20 +706,13 @@ def cmd_run_scheduled(_args: argparse.Namespace) -> None:
     log_file = LOG_DIR / f"daily-{date}.log"
     now = lambda: datetime.now().strftime("%H:%M:%S")
 
-    _append_log(log_file, f"[{now()}] running dailybrief daily\n")
-    daily = _run_logged(log_file, _dailybrief_module_cmd("daily"))
+    _append_log(log_file, f"[{now()}] running dailybrief run\n")
+    daily = _run_logged(log_file, _dailybrief_module_cmd("run", "--live", "--confirm-live", "--build-site", "--deploy"))
     if daily.returncode != 0:
-        _append_log(log_file, f"\n[{now()}] FAILED: dailybrief daily exited {daily.returncode}\n")
+        _append_log(log_file, f"\n[{now()}] FAILED: dailybrief run exited {daily.returncode}\n")
         raise SystemExit(daily.returncode)
 
     _append_log(log_file, f"\n[{now()}] OK\n")
-    _append_log(log_file, f"[{now()}] deploying...\n")
-    deploy = _run_logged(log_file, _dailybrief_module_cmd("deploy"))
-    if deploy.returncode == 0:
-        _append_log(log_file, f"[{now()}] deploy OK\n")
-    else:
-        _append_log(log_file, f"[{now()}] deploy FAILED (exit {deploy.returncode}) - non-fatal\n")
-
     try:
         subprocess.Popen(
             _dailybrief_module_cmd("open"),
@@ -617,7 +723,7 @@ def cmd_run_scheduled(_args: argparse.Namespace) -> None:
             start_new_session=(os.name != "nt"),
         )
     except Exception as exc:
-        _append_log(log_file, f"[{now()}] open skipped: {exc}\n")
+        _append_log(log_file, f"[{now()}] open skipped: {safe_error(exc)}\n")
     print(f"[run-scheduled] OK - log: {log_file}")
 
 
@@ -676,6 +782,28 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("daily").set_defaults(func=cmd_daily)
     sub.add_parser("dry-run").set_defaults(func=cmd_dry_run)
+    p = sub.add_parser("run")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", dest="live", action="store_false", default=False, help="Plan only; do not fetch, call LLM, write, deploy, or send")
+    mode.add_argument("--live", dest="live", action="store_true", help="Run the production pipeline")
+    p.add_argument("--confirm-live", action="store_true", help="Required with --live")
+    p.add_argument("--date", help="Report date YYYY-MM-DD. Defaults to today in REPORT_TZ")
+    p.add_argument("--build-site", action="store_true", help="Refresh daily_reports/index.html and archive.html after live run")
+    p.add_argument("--deploy", action="store_true", help="Run optional server deploy after live run")
+    p.add_argument("--send", action="store_true", help="Send notification summary after live run")
+    p.add_argument("--confirm-send", action="store_true", help="Required with --send for live notification delivery")
+    p.add_argument("--channels", default="slack,telegram,email", help="Comma-separated notification channels")
+    p.add_argument("--output-json", action="store_true", help="Print a JSON summary")
+    p.set_defaults(func=cmd_run)
+    p = sub.add_parser("notify")
+    p.add_argument("date", nargs="?")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", dest="live", action="store_false", default=False, help="Render notification delivery plan only")
+    mode.add_argument("--live", dest="live", action="store_true", help="Send enabled notifications")
+    p.add_argument("--confirm-send", action="store_true", help="Required with --live")
+    p.add_argument("--channels", default="slack,telegram,email", help="Comma-separated notification channels")
+    p.add_argument("--output-json", action="store_true", help="Print a JSON summary")
+    p.set_defaults(func=cmd_notify)
     p = sub.add_parser("render")
     p.add_argument("date", nargs="?")
     p.set_defaults(func=cmd_render)
@@ -708,5 +836,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
-    args = parser.parse_args(argv)
-    args.func(args)
+    try:
+        args = parser.parse_args(argv)
+        args.func(args)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        print(f"ERROR: {safe_error(exc)}", file=sys.stderr)
+        raise SystemExit(2)

@@ -1,0 +1,22 @@
+[Unit]
+Description=DailyBrief production report pipeline
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+Group=deploy
+WorkingDirectory=/home/deploy/DailyBrief
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=DAILYBRIEF_ROOT=/home/deploy/DailyBrief
+EnvironmentFile=/etc/dailybrief/dailybrief.env
+ExecStart=/home/deploy/DailyBrief/deploy/vultr/run_dailybrief_once.sh
+TimeoutStartSec=1800
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/deploy/DailyBrief/daily_reports /home/deploy/DailyBrief/logs /opt/research-stack/runtime/dailybrief-reports
